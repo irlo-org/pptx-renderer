@@ -25,6 +25,12 @@ interface TemplateShapeContext {
  * Shapes with no area and no text are dropped, and a child that cannot be
  * parsed is skipped rather than failing the whole tree — a template is
  * decoration, and one unreadable shape should not cost the rest of it.
+ *
+ * Only top-level placeholders are dropped here. A returned group keeps its
+ * children as raw XML, so whoever walks them must parse them with
+ * `skipPlaceholders: true` to exclude placeholders nested inside template
+ * groups: the renderer does so through `skipPlaceholderChildren`, the
+ * serializer through its template-only `skipPlaceholders`.
  */
 export function parseTemplateShapes(
   spTree: SafeXmlNode,

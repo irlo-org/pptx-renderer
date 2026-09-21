@@ -165,32 +165,46 @@ function serializeShape3D(shape3d: Shape3DProperties | undefined): SerializedSha
 }
 
 /**
+ * Where a node being serialized came from, and what its group descendants
+ * resolve against.
+ *
+ * `skipPlaceholders` is true for layout and master template shapes only. It is
+ * the same `skipPlaceholders` rule the renderer applies through
+ * `RenderContext.skipPlaceholderChildren`, so a placeholder nested inside a
+ * template group, at any depth, is excluded from the export exactly as it is
+ * excluded from the rendered slide. Slide-owned groups keep their grouped
+ * placeholders, because those carry the author's content.
+ */
+interface SerializeNodeContext {
+  rels: Map<string, RelEntry>;
+  partPath: string;
+  diagramDrawings?: Map<string, string>;
+  layout?: LayoutData;
+  master?: MasterData;
+  skipPlaceholders?: boolean;
+}
+
+/**
  * Parse a raw XML child node from a group into a typed node.
  */
 function parseGroupChildren(
   childXml: SafeXmlNode,
-  rels: Map<string, RelEntry>,
-  partPath: string,
-  diagramDrawings?: Map<string, string>,
-  layout?: LayoutData,
-  master?: MasterData,
+  ctx: SerializeNodeContext,
   parentGroup?: GroupNodeData,
 ): BaseNodeData[] {
-  const children = parseRenderableChildren(childXml, { rels, partPath, diagramDrawings });
+  const children = parseRenderableChildren(childXml, {
+    rels: ctx.rels,
+    partPath: ctx.partPath,
+    diagramDrawings: ctx.diagramDrawings,
+    skipPlaceholders: ctx.skipPlaceholders,
+  });
   for (const child of children) {
-    resolveNodePlaceholderInheritance(child, layout, master, { parentGroup });
+    resolveNodePlaceholderInheritance(child, ctx.layout, ctx.master, { parentGroup });
   }
   return children;
 }
 
-function serializeNode(
-  node: SlideNode | BaseNodeData,
-  rels: Map<string, RelEntry>,
-  partPath: string,
-  diagramDrawings?: Map<string, string>,
-  layout?: LayoutData,
-  master?: MasterData,
-): SerializedNode {
+function serializeNode(node: SlideNode | BaseNodeData, ctx: SerializeNodeContext): SerializedNode {
   const base: SerializedNode = {
     id: node.id,
     name: node.name,
@@ -234,17 +248,8 @@ function serializeNode(
       const children: SerializedNode[] = [];
       for (const childXml of g.children) {
         try {
-          const parsedChildren = parseGroupChildren(
-            childXml,
-            rels,
-            partPath,
-            diagramDrawings,
-            layout,
-            master,
-            g,
-          );
-          for (const parsed of parsedChildren) {
-            children.push(serializeNode(parsed, rels, partPath, diagramDrawings, layout, master));
+          for (const parsed of parseGroupChildren(childXml, ctx, g)) {
+            children.push(serializeNode(parsed, ctx));
           }
         } catch {
           // skip unparseable group children
@@ -267,6 +272,8 @@ function serializeNode(
  *
  * Template shapes are decoration rather than placeholders, so they resolve no
  * placeholder inheritance and are serialized with the part's own rels.
+ * Placeholders are excluded at every depth: `parseTemplateShapes` drops the
+ * top-level ones, and `skipPlaceholders` drops those nested inside groups.
  */
 function serializeTemplate(
   path: string,
@@ -276,7 +283,7 @@ function serializeTemplate(
   showMasterSp?: boolean,
 ): SerializedTemplate {
   const nodes = parseTemplateShapes(spTree, { rels, partPath: path, diagramDrawings }).map((node) =>
-    serializeNode(node, rels, path, diagramDrawings),
+    serializeNode(node, { rels, partPath: path, diagramDrawings, skipPlaceholders: true }),
   );
   return showMasterSp === undefined ? { path, nodes } : { path, nodes, showMasterSp };
 }
@@ -308,7 +315,13 @@ export function serializePresentation(pres: PresentationData): SerializedPresent
       masterPath: master ? masterPath : undefined,
       showMasterSp: slide.showMasterSp,
       nodes: slide.nodes.map((node) =>
-        serializeNode(node, slide.rels, slide.slidePath, pres.diagramDrawings, layout, master),
+        serializeNode(node, {
+          rels: slide.rels,
+          partPath: slide.slidePath,
+          diagramDrawings: pres.diagramDrawings,
+          layout,
+          master,
+        }),
       ),
     };
   });

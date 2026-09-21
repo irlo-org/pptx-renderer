@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { serializePresentation } from '../../../src/export/serializePresentation';
+import {
+  serializePresentation,
+  type SerializedNode,
+  type SerializedPresentation,
+} from '../../../src/export/serializePresentation';
+import { renderSlide } from '../../../src/renderer/SlideRenderer';
+import { parseShapeNode } from '../../../src/model/nodes/ShapeNode';
 import { parseGroupNode } from '../../../src/model/nodes/GroupNode';
 import { SafeXmlNode, parseXml } from '../../../src/parser/XmlParser';
 import type { PresentationData } from '../../../src/model/Presentation';
@@ -790,5 +796,211 @@ describe('serializePresentation layout and master template shapes', () => {
     });
     const result = serializePresentation(pres);
     expect(result.layouts.map((l) => l.path)).toEqual(['ppt/slideLayouts/slideLayout1.xml']);
+  });
+});
+
+/**
+ * Export parity: what serializePresentation() exposes for a slide, composed by
+ * the rule documented on SerializedPresentation, must be what renderSlide()
+ * draws. Each test renders the same fixture with the real renderer and compares
+ * text, so the expectation is never hardcoded on both sides.
+ */
+describe('serializePresentation template parity with the renderer', () => {
+  const LAYOUT_PATH = 'ppt/slideLayouts/slideLayout1.xml';
+  const MASTER_PATH = 'ppt/slideMasters/slideMaster1.xml';
+  const THEME_PATH = 'ppt/theme/theme1.xml';
+
+  function textShape(id: number, name: string, text: string, ph?: string) {
+    const nvPr = ph ? `<p:nvPr>${ph}</p:nvPr>` : '<p:nvPr/>';
+    return `
+      <p:sp>
+        <p:nvSpPr><p:cNvPr id="${id}" name="${name}"/><p:cNvSpPr/>${nvPr}</p:nvSpPr>
+        <p:spPr>
+          <a:xfrm><a:off x="0" y="0"/><a:ext cx="914400" cy="457200"/></a:xfrm>
+          <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+        </p:spPr>
+        <p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>${text}</a:t></a:r></a:p></p:txBody>
+      </p:sp>
+    `;
+  }
+
+  function group(id: number, name: string, children: string) {
+    return `
+      <p:grpSp>
+        <p:nvGrpSpPr><p:cNvPr id="${id}" name="${name}"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>
+        <p:grpSpPr>
+          <a:xfrm>
+            <a:off x="0" y="0"/><a:ext cx="914400" cy="914400"/>
+            <a:chOff x="0" y="0"/><a:chExt cx="914400" cy="914400"/>
+          </a:xfrm>
+        </p:grpSpPr>
+        ${children}
+      </p:grpSp>
+    `;
+  }
+
+  /**
+   * A template tree whose only visible text is `${prefix}_VISIBLE`, with a
+   * placeholder one level down and another two levels down. Both placeholders
+   * carry prompt text the renderer never draws.
+   */
+  function nestedTemplateTree(prefix: string, idBase: number) {
+    return group(
+      idBase,
+      `${prefix} outer group`,
+      textShape(idBase + 1, `${prefix} visible`, `${prefix}_VISIBLE`) +
+        textShape(
+          idBase + 2,
+          `${prefix} depth-1 placeholder`,
+          `${prefix}_DEPTH1_PROMPT`,
+          '<p:ph type="body" idx="1"/>',
+        ) +
+        group(
+          idBase + 3,
+          `${prefix} inner group`,
+          textShape(
+            idBase + 4,
+            `${prefix} depth-2 placeholder`,
+            `${prefix}_DEPTH2_PROMPT`,
+            '<p:ph type="body" idx="2"/>',
+          ),
+        ),
+    );
+  }
+
+  function spTree(shapes: string) {
+    return parseXml(`
+      <p:spTree xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+                xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+        ${shapes}
+      </p:spTree>
+    `);
+  }
+
+  function renderablePres(opts: {
+    layout: string;
+    master: string;
+    slideNodes?: any[];
+    slideShowMasterSp?: boolean;
+    layoutShowMasterSp?: boolean;
+  }): PresentationData {
+    const slide: SlideData = {
+      index: 0,
+      nodes: opts.slideNodes ?? [],
+      rels: new Map(),
+      slidePath: 'ppt/slides/slide1.xml',
+      showMasterSp: opts.slideShowMasterSp ?? true,
+    };
+    return {
+      width: 960,
+      height: 540,
+      slides: [slide],
+      layouts: new Map([
+        [
+          LAYOUT_PATH,
+          {
+            placeholders: [],
+            spTree: spTree(opts.layout),
+            rels: new Map(),
+            showMasterSp: opts.layoutShowMasterSp ?? true,
+          },
+        ],
+      ]),
+      masters: new Map([
+        [
+          MASTER_PATH,
+          {
+            colorMap: new Map(),
+            textStyles: {},
+            placeholders: [],
+            spTree: spTree(opts.master),
+            rels: new Map(),
+          },
+        ],
+      ]),
+      themes: new Map([
+        [
+          THEME_PATH,
+          {
+            colorScheme: new Map(),
+            majorFont: { latin: 'Calibri', ea: '', cs: '' },
+            minorFont: { latin: 'Calibri', ea: '', cs: '' },
+            fillStyles: [],
+            lineStyles: [],
+            effectStyles: [],
+          },
+        ],
+      ]),
+      slideToLayout: new Map([[0, LAYOUT_PATH]]),
+      layoutToMaster: new Map([[LAYOUT_PATH, MASTER_PATH]]),
+      masterToTheme: new Map([[MASTER_PATH, THEME_PATH]]),
+      media: new Map(),
+      charts: new Map(),
+      isWps: false,
+    } as PresentationData;
+  }
+
+  function nodeText(node: SerializedNode): string {
+    return (node.textBody?.totalText ?? '') + (node.children ?? []).map(nodeText).join('');
+  }
+
+  /** The composition rule exactly as README and SerializedPresentation document it. */
+  function documentedComposition(json: SerializedPresentation, slideIndex: number) {
+    const slide = json.slides[slideIndex];
+    const layout = json.layouts.find((l) => l.path === slide.layoutPath);
+    const master = json.masters.find((m) => m.path === slide.masterPath);
+    const nodes: SerializedNode[] = [];
+    if (slide.showMasterSp !== false && layout?.showMasterSp !== false && master) {
+      nodes.push(...master.nodes);
+    }
+    if (slide.showMasterSp !== false && layout) nodes.push(...layout.nodes);
+    nodes.push(...slide.nodes);
+    return nodes;
+  }
+
+  function serializedText(pres: PresentationData) {
+    return documentedComposition(serializePresentation(pres), 0).map(nodeText).join('');
+  }
+
+  function renderedText(pres: PresentationData) {
+    return (renderSlide(pres, pres.slides[0]).element.textContent ?? '').replace(/\s+/g, '');
+  }
+
+  it('excludes placeholders nested two levels deep in a layout group, as the renderer does', () => {
+    const pres = renderablePres({ layout: nestedTemplateTree('LAYOUT', 100), master: '' });
+
+    const layoutText = serializePresentation(pres).layouts[0].nodes.map(nodeText).join('');
+    expect(layoutText).toBe('LAYOUT_VISIBLE');
+    expect(serializedText(pres)).toBe(renderedText(pres));
+    expect(renderedText(pres)).toBe('LAYOUT_VISIBLE');
+  });
+
+  it('excludes placeholders nested two levels deep in a master group, as the renderer does', () => {
+    const pres = renderablePres({ layout: '', master: nestedTemplateTree('MASTER', 200) });
+
+    const masterText = serializePresentation(pres).masters[0].nodes.map(nodeText).join('');
+    expect(masterText).toBe('MASTER_VISIBLE');
+    expect(serializedText(pres)).toBe(renderedText(pres));
+    expect(renderedText(pres)).toBe('MASTER_VISIBLE');
+  });
+
+  it('keeps slide-owned grouped placeholders that carry authored content', () => {
+    const slideTree = spTree(
+      group(
+        300,
+        'slide outer group',
+        textShape(301, 'slide body', 'SLIDE_DEPTH1_AUTHORED', '<p:ph type="body" idx="1"/>') +
+          group(
+            302,
+            'slide inner group',
+            textShape(303, 'slide title', 'SLIDE_DEPTH2_AUTHORED', '<p:ph type="title"/>'),
+          ),
+      ),
+    );
+    const slideGroup = parseGroupNode(slideTree.allChildren()[0]);
+    const pres = renderablePres({ layout: '', master: '', slideNodes: [slideGroup] });
+
+    expect(serializedText(pres)).toBe('SLIDE_DEPTH1_AUTHOREDSLIDE_DEPTH2_AUTHORED');
+    expect(serializedText(pres)).toBe(renderedText(pres));
   });
 });
