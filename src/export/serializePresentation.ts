@@ -82,7 +82,10 @@ export interface SerializedSlide {
   layoutPath?: string;
   /** Key into `SerializedPresentation.masters`, when the layout resolves to one. */
   masterPath?: string;
-  /** When false, this slide suppresses its master's template shapes. */
+  /**
+   * When false, this slide suppresses both its layout's and its master's
+   * template shapes; only the slide's own `nodes` are drawn.
+   */
   showMasterSp: boolean;
 }
 
@@ -94,7 +97,10 @@ export interface SerializedSlide {
 export interface SerializedTemplate {
   path: string;
   nodes: SerializedNode[];
-  /** Layouts only: when false, the layout suppresses its master's shapes. */
+  /**
+   * Layouts only: when false, the layout suppresses its master's shapes. The
+   * layout's own shapes still draw unless the slide's `showMasterSp` is false.
+   */
   showMasterSp?: boolean;
 }
 
@@ -107,8 +113,15 @@ export interface SerializedPresentation {
    * Slide layouts that at least one slide uses, keyed by part path.
    *
    * Draw order for a slide is master shapes, then layout shapes, then the
-   * slide's own `nodes` — and the master is skipped when either the slide's
-   * or the layout's `showMasterSp` is false.
+   * slide's own `nodes`. The renderer composes them as follows:
+   *
+   * - slide `nodes`: always;
+   * - layout nodes: only when the slide's `showMasterSp` is not false;
+   * - master nodes: only when neither the slide's nor the layout's
+   *   `showMasterSp` is false.
+   *
+   * A slide with `showMasterSp: false` therefore draws neither its layout nor
+   * its master; a layout with `showMasterSp: false` suppresses only the master.
    */
   layouts: SerializedTemplate[];
   /** Slide masters that at least one used layout resolves to, keyed by part path. */

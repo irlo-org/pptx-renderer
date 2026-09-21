@@ -1003,4 +1003,29 @@ describe('serializePresentation template parity with the renderer', () => {
     expect(serializedText(pres)).toBe('SLIDE_DEPTH1_AUTHOREDSLIDE_DEPTH2_AUTHORED');
     expect(serializedText(pres)).toBe(renderedText(pres));
   });
+
+  const flagCases: Array<{ slide: boolean; layout: boolean; expected: string }> = [
+    { slide: true, layout: true, expected: 'MASTERLAYOUTSLIDE' },
+    { slide: true, layout: false, expected: 'LAYOUTSLIDE' },
+    { slide: false, layout: true, expected: 'SLIDE' },
+    { slide: false, layout: false, expected: 'SLIDE' },
+  ];
+
+  for (const { slide, layout, expected } of flagCases) {
+    it(`composes slide.showMasterSp=${slide}, layout.showMasterSp=${layout} as the renderer does`, () => {
+      const slideShape = parseShapeNode(
+        spTree(textShape(400, 'slide text', 'SLIDE')).allChildren()[0],
+      );
+      const pres = renderablePres({
+        layout: textShape(401, 'layout text', 'LAYOUT'),
+        master: textShape(402, 'master text', 'MASTER'),
+        slideNodes: [slideShape],
+        slideShowMasterSp: slide,
+        layoutShowMasterSp: layout,
+      });
+
+      expect(renderedText(pres)).toBe(expected);
+      expect(serializedText(pres)).toBe(renderedText(pres));
+    });
+  }
 });
